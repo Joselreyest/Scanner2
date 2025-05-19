@@ -10,6 +10,7 @@ import numpy as np
 import logging
 from collections import defaultdict
 import pytz
+import matplotlib.pyplot as plt
 
 # Set up logging
 logging.basicConfig(
@@ -149,9 +150,26 @@ def get_small_cap_symbols():
     log_debug("SMALL_CAP", f"Loaded {len(small_caps)} small cap symbols")
     return small_caps[:1000]  # Limit to 1000 symbols
 
+def get_custom_symbols(uploaded_file):
+    """Get symbols from uploaded CSV file"""
+    try:
+        if uploaded_file is not None:
+            df = pd.read_csv(uploaded_file)
+            if 'Symbol' in df.columns:
+                return df['Symbol'].tolist()
+            elif 'symbol' in df.columns:
+                return df['symbol'].tolist()
+            else:
+                return df.iloc[:, 0].tolist()
+        return []
+    except Exception as e:
+        log_debug("CUSTOM_SYMBOLS", f"Error reading custom symbols: {str(e)}")
+        return []
+
 def get_symbols_to_scan():
     """Get combined list of symbols based on user selection"""
     selected_exchanges = st.session_state.get('exchanges', ['SP500'])
+    custom_symbols = st.session_state.get('custom_symbols', [])
     
     symbols = []
     if 'SP500' in selected_exchanges:
@@ -168,6 +186,10 @@ def get_symbols_to_scan():
         small_caps = get_small_cap_symbols()
         symbols += small_caps
         log_debug("SYMBOLS", f"Loaded {len(small_caps)} small cap symbols")
+    
+    if 'CUSTOM' in selected_exchanges and custom_symbols:
+        symbols += custom_symbols
+        log_debug("SYMBOLS", f"Loaded {len(custom_symbols)} custom symbols")
     
     # Remove duplicates and shuffle
     symbols = list(set(symbols))
@@ -466,19 +488,54 @@ def get_market_cap(stock):
 
 def display_debug_info(scan_type, debug_reasons, total_scanned):
     """Display debug information for a scan"""
-    st.subheader(f"{scan_type} Scan Debug Info")
-    
-    if debug_reasons:
-        debug_df = pd.DataFrame([
-            {"Reason": reason, "Count": len(symbols), "Sample": ", ".join(symbols[:3])}
-            for reason, symbols in debug_reasons.items()
-        ]).sort_values("Count", ascending=False)
+    with st.expander(f"🔍 {scan_type} Scan Debug Info"):
+        if debug_reasons:
+            debug_df = pd.DataFrame([
+                {"Reason": reason, "Count": len(symbols), "Sample": ", ".join(symbols[:3])}
+                for reason, symbols in debug_reasons.items()
+            ]).sort_values("Count", ascending=False)
+            
+            st.dataframe(debug_df)
+            st.write(f"Total symbols scanned: {total_scanned}")
+            st.write(f"Rejected: {sum(len(v) for v in debug_reasons.values())}")
+            
+            try:
+                with open('scanner_debug.log', 'r') as f:
+                    st.subheader("Full Debug Log")
+                    st.text(f.read())
+            except Exception as e:
+                st.warning(f"Could not read debug log file: {str(e)}")
+        else:
+            st.write("No debug information available")
+
+def plot_stock_chart(symbol, period="1mo"):
+    """Plot stock chart for the given symbol"""
+    try:
+        stock = yf.Ticker(symbol)
+        hist = stock.history(period=period)
         
-        st.dataframe(debug_df)
-        st.write(f"Total symbols scanned: {total_scanned}")
-        st.write(f"Rejected: {sum(len(v) for v in debug_reasons.values())}")
-    else:
-        st.write("No debug information available")
+        if hist.empty:
+            st.warning(f"No data available for {symbol}")
+            return
+        
+        fig, ax = plt.subplots(figsize=(12, 6))
+        ax.plot(hist.index, hist['Close'], label='Close Price', color='blue')
+        
+        if 'SMA20' in hist.columns:
+            ax.plot(hist.index, hist['SMA20'], label='20-day SMA', color='orange', linestyle='--')
+        if 'SMA50' in hist.columns:
+            ax.plot(hist.index, hist['SMA50'], label='50-day SMA', color='green', linestyle='--')
+        
+        ax.set_title(f"{symbol} Price Chart ({period})")
+        ax.set_xlabel("Date")
+        ax.set_ylabel("Price ($)")
+        ax.grid(True)
+        ax.legend()
+        
+        st.pyplot(fig)
+        
+    except Exception as e:
+        st.error(f"Error plotting chart for {symbol}: {str(e)}")
 
 def display_premarket(df):
     """Enhanced pre-market display with more information"""
@@ -522,6 +579,12 @@ def display_premarket(df):
         height=min(800, 35 * (len(df) + 1))
     )
     
+    # Add chart option for each symbol
+    if not df.empty:
+        selected_symbol = st.selectbox("Select a symbol to view chart:", df['symbol'])
+        if selected_symbol:
+            plot_stock_chart(selected_symbol)
+    
     st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 def display_unusual_volume(df):
@@ -549,6 +612,12 @@ def display_unusual_volume(df):
                 pass
     
     st.dataframe(df, use_container_width=True)
+    
+    # Add chart option for each symbol
+    if not df.empty:
+        selected_symbol = st.selectbox("Select a symbol to view chart:", df['Symbol'])
+        if selected_symbol:
+            plot_stock_chart(selected_symbol)
 
 def display_breakouts(df):
     """Display breakout stocks"""
@@ -575,6 +644,12 @@ def display_breakouts(df):
                 pass
     
     st.dataframe(df, use_container_width=True)
+    
+    # Add chart option for each symbol
+    if not df.empty:
+        selected_symbol = st.selectbox("Select a symbol to view chart:", df['Symbol'])
+        if selected_symbol:
+            plot_stock_chart(selected_symbol)
 
 def main():
     try:
@@ -583,9 +658,18 @@ def main():
         # Exchange selection
         st.session_state.exchanges = st.sidebar.multiselect(
             "Exchanges to Scan",
-            ['SP500', 'NASDAQ', 'SMALLCAP'],
-            default=['SP500', 'NASDAQ', 'SMALLCAP']
+            ['SP500', 'NASDAQ', 'SMALLCAP', 'CUSTOM'],
+            default=['SP500', 'NASDAQ']
         )
+        
+        # Custom symbols upload
+        if 'CUSTOM' in st.session_state.exchanges:
+            uploaded_file = st.sidebar.file_uploader(
+                "Upload CSV with Symbols", 
+                type=['csv'],
+                help="Upload a CSV file with a 'Symbol' column or a single column of symbols"
+            )
+            st.session_state.custom_symbols = get_custom_symbols(uploaded_file)
         
         scan_type = st.sidebar.selectbox(
             "Scan Type",
@@ -626,7 +710,7 @@ def main():
         - Small Caps: ETF Holdings + Known Stocks
         """)
         
-        st.title("📈 Robust Stock Scanner Pro")
+        st.title("📈 Enhanced Stock Scanner Pro")
         
         if st.sidebar.button("Run Scan"):
             with st.spinner("Loading symbols and scanning..."):
@@ -643,14 +727,6 @@ def main():
                 else:
                     results = get_breakouts(min_price, min_volume, symbols, max_symbols_to_scan)
                     display_breakouts(results)
-                
-                if debug_mode:
-                    try:
-                        with open('scanner_debug.log', 'r') as f:
-                            st.subheader("Debug Log")
-                            st.text(f.read())
-                    except:
-                        st.warning("Could not read debug log file")
     except Exception as e:
         st.error(f"An unexpected error occurred: {str(e)}")
         logging.error(f"Main error: {str(e)}")
