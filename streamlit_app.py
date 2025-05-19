@@ -46,8 +46,8 @@ tech = TechnicalIndicators()
 
 # Set page config
 st.set_page_config(
-    page_title="Advanced Stock Scanner with Debug",
-    page_icon="🐞",
+    page_title="Advanced Stock Scanner Pro",
+    page_icon="📊",
     layout="wide"
 )
 
@@ -72,17 +72,21 @@ def get_sp500_symbols():
 
 @st.cache_data(ttl=86400)
 def get_nasdaq_symbols():
-    """Get Nasdaq-listed symbols"""
+    """Get Nasdaq-listed symbols from a reliable source"""
     try:
-        nasdaq_url = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=10000"
+        # Alternative source for NASDAQ symbols
+        nasdaq_url = "https://old.nasdaq.com/screening/companies-by-name.aspx?letter=0&exchange=nasdaq&render=download"
         headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(nasdaq_url, headers=headers, timeout=10)
-        data = response.json()
-        symbols = [item['symbol'] for item in data['data']['table']['rows']]
-        return symbols
+        response = requests.get(nasdaq_url, headers=headers, timeout=15)
+        
+        # Read the CSV content
+        from io import StringIO
+        df = pd.read_csv(StringIO(response.text))
+        return df['Symbol'].tolist()
     except Exception as e:
         log_debug("SYMBOL_FETCH", f"Failed to get NASDAQ symbols: {str(e)}")
         try:
+            # Fallback to NASDAQ 100
             table = pd.read_html('https://en.wikipedia.org/wiki/Nasdaq-100')[4]
             return table['Ticker'].tolist()
         except:
@@ -90,14 +94,44 @@ def get_nasdaq_symbols():
 
 @st.cache_data(ttl=86400)
 def get_small_cap_symbols():
-    """Get small cap stock symbols"""
+    """Get small cap stock symbols from multiple reliable sources"""
+    small_caps = []
+    
+    # Source 1: Russell 2000 components
     try:
-        russell_url = "https://en.wikipedia.org/wiki/Russell_2000_Index"
-        tables = pd.read_html(russell_url)
-        return tables[2]['Ticker'].tolist()
+        russell_url = "https://www.ishares.com/us/products/239710/ishares-russell-2000-etf/1467271812596.ajax"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        params = {
+            "fileType": "csv",
+            "fileName": "IWM_holdings",
+            "dataType": "fund"
+        }
+        response = requests.get(russell_url, headers=headers, params=params, timeout=15)
+        df = pd.read_csv(StringIO(response.text))
+        small_caps += df['Ticker'].dropna().tolist()
     except Exception as e:
-        log_debug("SYMBOL_FETCH", f"Failed to get small cap symbols: {str(e)}")
-        return ['PLUG', 'FCEL', 'BLNK', 'SNDL', 'NIO', 'XPEV', 'LI', 'WKHS']
+        log_debug("SMALL_CAP", f"Failed to get Russell 2000: {str(e)}")
+    
+    # Source 2: Small cap ETFs holdings
+    etfs = ['IWM', 'VB', 'SCHA', 'FNDA', 'SMLF']
+    for etf in etfs:
+        try:
+            stock = yf.Ticker(etf)
+            holdings = stock.get_holdings()
+            if holdings is not None and not holdings.empty:
+                small_caps += holdings.index.tolist()
+        except:
+            continue
+    
+    # Source 3: Known small cap lists
+    extra_caps = ['PLUG', 'FCEL', 'BLNK', 'SNDL', 'NIO', 'XPEV', 'LI', 'WKHS', 
+                 'MVIS', 'SPCE', 'RIDE', 'NKLA', 'WKHS', 'BNGO', 'CTRM', 'SENS']
+    small_caps += extra_caps
+    
+    # Remove duplicates and invalid symbols
+    small_caps = list(set([s for s in small_caps if isinstance(s, str) and 1 < len(s) < 6]))
+    
+    return small_caps[:1000]  # Limit to 1000 symbols
 
 def get_symbols_to_scan():
     """Get combined list of symbols based on user selection"""
@@ -105,15 +139,24 @@ def get_symbols_to_scan():
     
     symbols = []
     if 'SP500' in selected_exchanges:
-        symbols += get_sp500_symbols()
+        sp500 = get_sp500_symbols()
+        symbols += sp500
+        log_debug("SYMBOLS", f"Loaded {len(sp500)} SP500 symbols")
+    
     if 'NASDAQ' in selected_exchanges:
-        symbols += get_nasdaq_symbols()
+        nasdaq = get_nasdaq_symbols()
+        symbols += nasdaq
+        log_debug("SYMBOLS", f"Loaded {len(nasdaq)} NASDAQ symbols")
+    
     if 'SMALLCAP' in selected_exchanges:
-        symbols += get_small_cap_symbols()
+        small_caps = get_small_cap_symbols()
+        symbols += small_caps
+        log_debug("SYMBOLS", f"Loaded {len(small_caps)} small cap symbols")
     
     # Remove duplicates and shuffle for better distribution
     symbols = list(set(symbols))
     np.random.shuffle(symbols)
+    log_debug("SYMBOLS", f"Total unique symbols to scan: {len(symbols)}")
     return symbols
 
 def get_premarket_movers(min_price, min_volume):
@@ -183,7 +226,7 @@ def get_premarket_movers(min_price, min_volume):
         log_debug("PRE-MARKET", f"Error fetching data: {str(e)}")
         return pd.DataFrame()
 
-def get_unusual_volume(min_price, min_volume, symbols):
+def get_unusual_volume(min_price, min_volume, symbols, max_symbols_to_scan):
     """Scan for unusual volume stocks with detailed debugging"""
     results = []
     debug_reasons = defaultdict(list)
@@ -191,10 +234,13 @@ def get_unusual_volume(min_price, min_volume, symbols):
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    for i, symbol in enumerate(symbols[:200]):
+    symbols_to_scan = symbols[:max_symbols_to_scan]
+    total_symbols = len(symbols_to_scan)
+    
+    for i, symbol in enumerate(symbols_to_scan):
         try:
-            status_text.text(f"Scanning {symbol} ({i+1}/{min(200, len(symbols))})")
-            progress_bar.progress((i+1)/min(200, len(symbols)))
+            status_text.text(f"Scanning {symbol} ({i+1}/{total_symbols})")
+            progress_bar.progress((i+1)/total_symbols)
             
             stock = yf.Ticker(symbol)
             hist = stock.history(period="1d", interval="5m")
@@ -260,14 +306,14 @@ def get_unusual_volume(min_price, min_volume, symbols):
         st.dataframe(debug_df)
         
         # Log summary
-        logging.info("Unusual Volume Scan Summary:")
+        logging.info(f"Unusual Volume Scan Summary ({total_symbols} symbols scanned):")
         for reason, count in debug_stats.items():
             if "Unusual Volume Rejected" in reason:
                 logging.info(f"{reason}: {count}")
     
     return pd.DataFrame(results)
 
-def get_breakouts(min_price, min_volume, symbols):
+def get_breakouts(min_price, min_volume, symbols, max_symbols_to_scan):
     """Scan for breakout stocks with detailed debugging"""
     results = []
     debug_reasons = defaultdict(list)
@@ -275,10 +321,13 @@ def get_breakouts(min_price, min_volume, symbols):
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    for i, symbol in enumerate(symbols[:200]):
+    symbols_to_scan = symbols[:max_symbols_to_scan]
+    total_symbols = len(symbols_to_scan)
+    
+    for i, symbol in enumerate(symbols_to_scan):
         try:
-            status_text.text(f"Scanning {symbol} ({i+1}/{min(200, len(symbols))})")
-            progress_bar.progress((i+1)/min(200, len(symbols)))
+            status_text.text(f"Scanning {symbol} ({i+1}/{total_symbols})")
+            progress_bar.progress((i+1)/total_symbols)
             
             stock = yf.Ticker(symbol)
             hist = stock.history(period="1mo")
@@ -343,7 +392,7 @@ def get_breakouts(min_price, min_volume, symbols):
         st.dataframe(debug_df)
         
         # Log summary
-        logging.info("Breakout Scan Summary:")
+        logging.info(f"Breakout Scan Summary ({total_symbols} symbols scanned):")
         for reason, count in debug_stats.items():
             if "Breakout Rejected" in reason:
                 logging.info(f"{reason}: {count}")
@@ -482,22 +531,33 @@ def main():
             )
         min_volume *= 1000
         
+        # Symbol limit slider
+        max_symbols_to_scan = st.sidebar.slider(
+            "Max Symbols to Scan",
+            min_value=50,
+            max_value=1000,
+            value=200,
+            step=50,
+            help="Limit how many symbols to scan for performance reasons"
+        )
+        
         # Main app
-        st.title("🔍 Advanced Stock Scanner with Debug")
+        st.title("📈 Advanced Stock Scanner Pro")
         
         if st.sidebar.button("Run Scan"):
             with st.spinner("Scanning stocks..."):
                 symbols = get_symbols_to_scan()
-                st.write(f"Scanning {len(symbols)} symbols from {', '.join(st.session_state.exchanges)}")
+                st.write(f"Loaded {len(symbols)} total symbols from selected exchanges")
+                st.write(f"Scanning first {max_symbols_to_scan} symbols...")
                 
                 if scan_type == "Pre-Market Gappers":
                     results = get_premarket_movers(min_price, min_volume)
                     display_premarket(results)
                 elif scan_type == "Unusual Volume":
-                    results = get_unusual_volume(min_price, min_volume, symbols)
+                    results = get_unusual_volume(min_price, min_volume, symbols, max_symbols_to_scan)
                     display_unusual_volume(results)
                 else:
-                    results = get_breakouts(min_price, min_volume, symbols)
+                    results = get_breakouts(min_price, min_volume, symbols, max_symbols_to_scan)
                     display_breakouts(results)
                 
                 # Show debug log
