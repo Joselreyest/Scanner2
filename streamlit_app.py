@@ -12,6 +12,14 @@ from collections import defaultdict
 import pytz
 import matplotlib.pyplot as plt
 
+try:
+    import matplotlib.pyplot as plt
+    MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    MATPLOTLIB_AVAILABLE = False
+    st.warning("Charting disabled - matplotlib not installed. Install with: pip install matplotlib")
+
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
@@ -510,6 +518,10 @@ def display_debug_info(scan_type, debug_reasons, total_scanned):
 
 def plot_stock_chart(symbol, period="1mo"):
     """Plot stock chart for the given symbol"""
+    if not MATPLOTLIB_AVAILABLE:
+        st.warning("Charting requires matplotlib. Install with: pip install matplotlib")
+        return
+    
     try:
         stock = yf.Ticker(symbol)
         hist = stock.history(period=period)
@@ -533,6 +545,7 @@ def plot_stock_chart(symbol, period="1mo"):
         ax.legend()
         
         st.pyplot(fig)
+        plt.close(fig)  # Important to prevent memory leaks
         
     except Exception as e:
         st.error(f"Error plotting chart for {symbol}: {str(e)}")
