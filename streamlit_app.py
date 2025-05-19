@@ -175,7 +175,84 @@ def get_symbols_to_scan():
     return symbols
 
 def get_premarket_movers(min_price, min_volume):
-    """Get pre-market movers with filters"""
+    """Get pre-market movers with improved reliability"""
+    try:
+        # Try multiple pre-market data sources
+        sources = [
+            get_benzinga_premarket(),
+            get_yahoo_premarket(),
+            get_marketwatch_premarket()
+        ]
+        
+        # Combine all sources and clean the data
+        combined_df = pd.concat([df for df in sources if df is not None and not df.empty])
+        
+        if combined_df.empty:
+            log_debug("PRE-MARKET", "All pre-market sources returned empty data")
+            return pd.DataFrame()
+        
+        # Standardize column names
+        combined_df.columns = combined_df.columns.str.lower()
+        column_mapping = {
+            'ticker': 'symbol',
+            'last sale': 'price',
+            'price': 'price',
+            'close': 'price',
+            '% change': 'change',
+            'change': 'change',
+            'volume': 'volume',
+            'avg vol': 'volume'
+        }
+        
+        # Rename columns
+        for old_col, new_col in column_mapping.items():
+            if old_col in combined_df.columns:
+                combined_df.rename(columns={old_col: new_col}, inplace=True)
+        
+        # Convert numeric columns
+        numeric_cols = {'price', 'change', 'volume'}
+        for col in numeric_cols:
+            if col in combined_df.columns:
+                combined_df[col] = pd.to_numeric(
+                    combined_df[col].astype(str).str.replace('[\$,%]', '', regex=True),
+                    errors='coerce'
+                )
+        
+        # Calculate percentage change if not already available
+        if 'change' not in combined_df.columns and 'price' in combined_df.columns:
+            # This would require additional logic to calculate changes
+            pass
+        
+        # Filter based on criteria
+        required_cols = {'symbol', 'price', 'change', 'volume'}
+        if not required_cols.issubset(combined_df.columns):
+            missing = required_cols - set(combined_df.columns)
+            log_debug("PRE-MARKET", f"Missing required columns: {missing}")
+            return pd.DataFrame()
+        
+        filtered = combined_df[
+            (combined_df['price'] > min_price) & 
+            (combined_df['volume'] > min_volume)
+        ].copy()
+        
+        if filtered.empty:
+            sample = combined_df.sample(min(3, len(combined_df)))
+            log_debug("PRE-MARKET", "Sample rejected symbols:")
+            for _, row in sample.iterrows():
+                log_debug("PRE-MARKET", 
+                    f"Symbol: {row['symbol']}, Price: {row.get('price', 'N/A')}, "
+                    f"Volume: {row.get('volume', 'N/A')}, "
+                    f"Change: {row.get('change', 'N/A')}%"
+                )
+        
+        return filtered
+    
+    except Exception as e:
+        log_debug("PRE-MARKET", f"Error in get_premarket_movers: {str(e)}")
+        return pd.DataFrame()
+
+def get_benzinga_premarket():
+    """Get pre-market data from Benzinga"""
     try:
         url = "https://www.benzinga.com/premarket"
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -184,46 +261,105 @@ def get_premarket_movers(min_price, min_volume):
         table = soup.find('table')
         
         if table is None:
-            log_debug("PRE-MARKET", "Could not find premarket data table")
+            log_debug("BENZINGA", "Could not find premarket data table")
             return pd.DataFrame()
         
-        try:
-            df = pd.read_html(StringIO(str(table)))[0]
-        except Exception as e:
-            log_debug("PRE-MARKET", f"Error parsing table: {e}")
-            return pd.DataFrame()
-        
-        # Clean up column names
-        df.columns = [col.strip() for col in df.columns]
-        
-        # Handle different column name patterns
-        column_mapping = {
-            'Ticker': 'Symbol',
-            'Close▲▼': 'Close',
-            '±%': '% Change',
-            'Avg. Vol▲▼': 'Volume',
-            'Company': 'Symbol',
-            'Price': 'Close'
-        }
-        
-        for old_name, new_name in column_mapping.items():
-            if old_name in df.columns:
-                df.rename(columns={old_name: new_name}, inplace=True)
-        
-        # Convert numeric columns
-        numeric_cols = {'Close', '% Change', 'Volume'}
-        for col in numeric_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col].replace('[\$,%]', '', regex=True), errors='coerce')
-        
-        # Filter and return
-        if 'Close' in df.columns and 'Volume' in df.columns:
-            return df[(df['Close'] > min_price) & (df['Volume'] > min_volume)].copy()
-        return pd.DataFrame()
-            
+        df = pd.read_html(StringIO(str(table)))[0]
+        log_debug("BENZINGA", f"Found {len(df)} premarket movers")
+        return df
     except Exception as e:
-        log_debug("PRE-MARKET", f"Error fetching data: {str(e)}")
+        log_debug("BENZINGA", f"Error: {str(e)}")
         return pd.DataFrame()
+
+def get_yahoo_premarket():
+    """Get pre-market data from Yahoo Finance"""
+    try:
+        url = "https://finance.yahoo.com/pre-market"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        table = soup.find('table')
+        
+        if table is None:
+            log_debug("YAHOO", "Could not find premarket data table")
+            return pd.DataFrame()
+        
+        df = pd.read_html(StringIO(str(table)))[0]
+        log_debug("YAHOO", f"Found {len(df)} premarket movers")
+        return df
+    except Exception as e:
+        log_debug("YAHOO", f"Error: {str(e)}")
+        return pd.DataFrame()
+
+def get_marketwatch_premarket():
+    """Get pre-market data from MarketWatch"""
+    try:
+        url = "https://www.marketwatch.com/tools/screener/premarket"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        table = soup.find('table')
+        
+        if table is None:
+            log_debug("MARKETWATCH", "Could not find premarket data table")
+            return pd.DataFrame()
+        
+        df = pd.read_html(StringIO(str(table)))[0]
+        log_debug("MARKETWATCH", f"Found {len(df)} premarket movers")
+        return df
+    except Exception as e:
+        log_debug("MARKETWATCH", f"Error: {str(e)}")
+        return pd.DataFrame()
+
+def display_premarket(df):
+    """Enhanced pre-market display with more information"""
+    if df.empty:
+        st.warning("""
+        No premarket gappers found matching your criteria. This could be because:
+        - It's outside pre-market hours (4:00 AM - 9:30 AM ET)
+        - Your price/volume filters are too restrictive
+        - Data sources are temporarily unavailable
+        """)
+        
+        if debug_mode:
+            st.info("Try lowering your minimum price/volume requirements or check debug logs")
+        return
+    
+    st.subheader("Pre-Market Gappers")
+    
+    # Add additional metrics
+    if 'change' in df.columns:
+        df['change'] = pd.to_numeric(df['change'], errors='coerce')
+        df = df.sort_values('change', ascending=False)
+    
+    # Format display
+    format_dict = {
+        'price': '${:.2f}',
+        'change': '{:.2f}%',
+        'volume': '{:,}'
+    }
+    
+    for col, fmt in format_dict.items():
+        if col in df.columns:
+            try:
+                df[col] = df[col].apply(lambda x: fmt.format(x) if pd.notnull(x) else 'N/A')
+            except:
+                pass
+    
+    # Display with additional info
+    st.dataframe(
+        df[['symbol', 'price', 'change', 'volume']],
+        use_container_width=True,
+        height=min(800, 35 * (len(df) + 1))
+    
+    st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+def is_premarket_hours():
+    now = datetime.now().astimezone(pytz.timezone('US/Eastern'))
+    premarket_start = now.replace(hour=4, minute=0, second=0, microsecond=0)
+    premarket_end = now.replace(hour=9, minute=30, second=0, microsecond=0)
+    return premarket_start <= now < premarket_end
+
 
 def get_unusual_volume(min_price, min_volume, symbols, max_symbols_to_scan):
     """Scan for unusual volume stocks"""
