@@ -5,16 +5,18 @@ import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
 import time
-try:
-    from utils.technical_indicators import TechnicalIndicators
-except ImportError:
-    st.error("Technical indicators module not found. Creating dummy class.")
-    class TechnicalIndicators:
-        @staticmethod
-        def add_all_indicators(df):
-            return df
+from io import StringIO
 
-# Initialize technical indicators
+# Initialize technical indicators (simplified version)
+class TechnicalIndicators:
+    @staticmethod
+    def add_all_indicators(df):
+        if len(df) >= 20:
+            df['SMA20'] = df['Close'].rolling(20).mean()
+        if len(df) >= 50:
+            df['SMA50'] = df['Close'].rolling(50).mean()
+        return df
+
 tech = TechnicalIndicators()
 
 # Set page config
@@ -23,6 +25,147 @@ st.set_page_config(
     page_icon="📈",
     layout="wide"
 )
+
+def display_premarket(df):
+    """Display premarket movers"""
+    if df.empty:
+        st.warning("No premarket gappers found matching your criteria")
+        return
+    
+    st.subheader("Pre-Market Gappers")
+    
+    # Try to format the numeric columns
+    format_columns = {
+        'Close': '${:.2f}',
+        '% Change': '{:.2f}%',
+        'Volume': '{:,}'
+    }
+    
+    # Apply formatting to existing columns
+    for col, fmt in format_columns.items():
+        if col in df.columns:
+            try:
+                df[col] = df[col].apply(lambda x: fmt.format(x) if pd.notnull(x) else x)
+            except:
+                pass
+    
+    st.dataframe(df, use_container_width=True)
+
+def display_unusual_volume(df):
+    """Display unusual volume stocks"""
+    if df.empty:
+        st.warning("No unusual volume stocks found")
+        return
+    
+    st.subheader("Unusual Volume Stocks")
+    
+    # Format numeric columns
+    if not df.empty:
+        df = df.sort_values('Volume Ratio', ascending=False)
+        format_dict = {
+            'Price': '${:.2f}',
+            '% Change': '{:.2f}%',
+            'Volume': '{:,}',
+            'Avg Volume': '{:,}',
+            'Volume Ratio': '{:.2f}x'
+        }
+        
+        for col, fmt in format_dict.items():
+            if col in df.columns:
+                try:
+                    df[col] = df[col].apply(lambda x: fmt.format(x) if pd.notnull(x) else x)
+                except:
+                    pass
+    
+    st.dataframe(df, use_container_width=True)
+
+def display_breakouts(df):
+    """Display breakout stocks"""
+    if df.empty:
+        st.warning("No breakout stocks found")
+        return
+    
+    st.subheader("Breakout Candidates")
+    
+    # Format numeric columns
+    if not df.empty:
+        format_dict = {
+            'Price': '${:.2f}',
+            'Breakout Level': '${:.2f}',
+            'Volume': '{:,}',
+            'SMA20': '{:.2f}',
+            'SMA50': '{:.2f}',
+            'RSI': '{:.2f}'
+        }
+        
+        for col, fmt in format_dict.items():
+            if col in df.columns:
+                try:
+                    df[col] = df[col].apply(lambda x: fmt.format(x) if pd.notnull(x) else x)
+                except:
+                    pass
+    
+    st.dataframe(df, use_container_width=True)
+
+def get_premarket_movers(min_price, min_volume):
+    """Get pre-market movers with filters"""
+    try:
+        url = "https://www.benzinga.com/premarket"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        table = soup.find('table')
+        
+        if table is None:
+            st.warning("Could not find premarket data table")
+            return pd.DataFrame()
+        
+        # Parse the HTML table
+        try:
+            df = pd.read_html(StringIO(str(table)))[0]
+        except Exception as e:
+            st.warning(f"Error parsing table: {e}")
+            return pd.DataFrame()
+        
+        # Clean up column names
+        df.columns = [col.strip() for col in df.columns]
+        
+        # Handle different column name patterns
+        column_mapping = {
+            'Ticker': 'Symbol',
+            'Close▲▼': 'Close',
+            '±%': '% Change',
+            'Avg. Vol▲▼': 'Volume'
+        }
+        
+        # Rename columns if they exist
+        for old_name, new_name in column_mapping.items():
+            if old_name in df.columns:
+                df.rename(columns={old_name: new_name}, inplace=True)
+        
+        # Convert numeric columns
+        if 'Close' in df.columns:
+            df['Close'] = pd.to_numeric(df['Close'].replace('[\$,]', '', regex=True), errors='coerce')
+        if '% Change' in df.columns:
+            df['% Change'] = pd.to_numeric(df['% Change'].replace('[\%]', '', regex=True), errors='coerce')
+        if 'Volume' in df.columns:
+            df['Volume'] = pd.to_numeric(df['Volume'].replace('[\$,]', '', regex=True), errors='coerce')
+        
+        # Filter and return
+        if 'Close' in df.columns and 'Volume' in df.columns:
+            return df[
+                (df['Close'] > min_price) & 
+                (df['Volume'] > min_volume)
+            ].copy()
+        else:
+            st.warning(f"Missing required columns. Available columns: {df.columns.tolist()}")
+            return pd.DataFrame()
+            
+    except Exception as e:
+        st.error(f"Error fetching premarket data: {str(e)}")
+        return pd.DataFrame()
+
+# [Rest of your functions (get_unusual_volume, get_breakouts, get_sp500_symbols) remain the same...]
 
 def main():
     try:
@@ -53,48 +196,6 @@ def main():
                     display_breakouts(results)
     except Exception as e:
         st.error(f"An unexpected error occurred: {str(e)}")
-
-def get_premarket_movers(min_price, min_volume):
-    """Get pre-market movers with filters"""
-    try:
-        url = "https://www.benzinga.com/premarket"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        table = soup.find('table')
-        
-        if table is None:
-            st.warning("Could not find premarket data table")
-            return pd.DataFrame()
-            
-        # Use pandas with lxml if available, fallback to html.parser
-        try:
-            df = pd.read_html(str(table))[0]
-        except:
-            # Try alternative parsing if lxml fails
-            from io import StringIO
-            df = pd.read_html(StringIO(str(table)))[0]
-        
-        # Clean up column names
-        df.columns = [col.strip() for col in df.columns]
-        
-        # Check for required columns
-        required_columns = {'Last Sale', 'Volume'}
-        if not required_columns.issubset(df.columns):
-            st.warning(f"Missing required columns in data. Found: {df.columns.tolist()}")
-            return pd.DataFrame()
-            
-        # Filter and return
-        return df[
-            (df['Last Sale'].astype(float) > min_price) & 
-            (df['Volume'].astype(int) > min_volume)
-        ].copy()
-        
-    except Exception as e:
-        st.error(f"Error fetching premarket data: {str(e)}")
-        return pd.DataFrame()
-
-# [Rest of your functions remain the same...]
 
 if __name__ == "__main__":
     main()
