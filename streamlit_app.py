@@ -350,7 +350,100 @@ def get_breakouts(min_price, min_volume, symbols):
     
     return pd.DataFrame(results)
 
-# [Rest of the functions (display_*, get_market_cap, etc.) remain the same]
+def get_market_cap(stock):
+    """Get market cap if available"""
+    try:
+        info = stock.info
+        if 'marketCap' in info:
+            cap = info['marketCap']
+            if cap > 1e9:
+                return f"${cap/1e9:.2f}B"
+            elif cap > 1e6:
+                return f"${cap/1e6:.2f}M"
+            return f"${cap:,.0f}"
+    except:
+        return "N/A"
+    return "N/A"
+
+def display_premarket(df):
+    """Display premarket movers"""
+    if df.empty:
+        st.warning("No premarket gappers found matching your criteria")
+        return
+    
+    st.subheader("Pre-Market Gappers")
+    
+    # Format numeric columns
+    format_dict = {
+        'Close': '${:.2f}',
+        '% Change': '{:.2f}%',
+        'Volume': '{:,}'
+    }
+    
+    for col, fmt in format_dict.items():
+        if col in df.columns:
+            try:
+                df[col] = df[col].apply(lambda x: fmt.format(x) if pd.notnull(x) else x)
+            except:
+                pass
+    
+    st.dataframe(df, use_container_width=True)
+
+def display_unusual_volume(df):
+    """Display unusual volume stocks"""
+    if df.empty:
+        st.warning("No unusual volume stocks found")
+        return
+    
+    st.subheader("Unusual Volume Stocks")
+    
+    # Format numeric columns
+    if not df.empty:
+        df = df.sort_values('Volume Ratio', ascending=False)
+        format_dict = {
+            'Price': '${:.2f}',
+            '% Change': '{:.2f}%',
+            'Volume': '{:,}',
+            'Avg Volume': '{:,}',
+            'Volume Ratio': '{:.2f}x'
+        }
+        
+        for col, fmt in format_dict.items():
+            if col in df.columns:
+                try:
+                    df[col] = df[col].apply(lambda x: fmt.format(x) if pd.notnull(x) else x)
+                except:
+                    pass
+    
+    st.dataframe(df, use_container_width=True)
+
+def display_breakouts(df):
+    """Display breakout stocks"""
+    if df.empty:
+        st.warning("No breakout stocks found")
+        return
+    
+    st.subheader("Breakout Candidates")
+    
+    # Format numeric columns
+    if not df.empty:
+        format_dict = {
+            'Price': '${:.2f}',
+            'Breakout Level': '${:.2f}',
+            'Volume': '{:,}',
+            'SMA20': '{:.2f}',
+            'SMA50': '{:.2f}',
+            'RSI': '{:.2f}'
+        }
+        
+        for col, fmt in format_dict.items():
+            if col in df.columns:
+                try:
+                    df[col] = df[col].apply(lambda x: fmt.format(x) if pd.notnull(x) else x)
+                except:
+                    pass
+    
+    st.dataframe(df, use_container_width=True)
 
 def main():
     try:
