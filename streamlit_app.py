@@ -9,6 +9,7 @@ from io import StringIO
 import numpy as np
 import logging
 from collections import defaultdict
+import pytz
 
 # Set up logging
 logging.basicConfig(
@@ -174,6 +175,13 @@ def get_symbols_to_scan():
     log_debug("SYMBOLS", f"Total unique symbols to scan: {len(symbols)}")
     return symbols
 
+def is_premarket_hours():
+    """Check if current time is within pre-market hours (4:00 AM - 9:30 AM ET)"""
+    now = datetime.now().astimezone(pytz.timezone('US/Eastern'))
+    premarket_start = now.replace(hour=4, minute=0, second=0, microsecond=0)
+    premarket_end = now.replace(hour=9, minute=30, second=0, microsecond=0)
+    return premarket_start <= now < premarket_end
+
 def get_premarket_movers(min_price, min_volume):
     """Get pre-market movers with improved reliability"""
     try:
@@ -310,56 +318,6 @@ def get_marketwatch_premarket():
     except Exception as e:
         log_debug("MARKETWATCH", f"Error: {str(e)}")
         return pd.DataFrame()
-
-def display_premarket(df):
-    """Enhanced pre-market display with more information"""
-    if df.empty:
-        st.warning("""
-        No premarket gappers found matching your criteria. This could be because:
-        - It's outside pre-market hours (4:00 AM - 9:30 AM ET)
-        - Your price/volume filters are too restrictive
-        - Data sources are temporarily unavailable
-        """)
-        
-        if debug_mode:
-            st.info("Try lowering your minimum price/volume requirements or check debug logs")
-        return
-    
-    st.subheader("Pre-Market Gappers")
-    
-    # Add additional metrics
-    if 'change' in df.columns:
-        df['change'] = pd.to_numeric(df['change'], errors='coerce')
-        df = df.sort_values('change', ascending=False)
-    
-    # Format display
-    format_dict = {
-        'price': '${:.2f}',
-        'change': '{:.2f}%',
-        'volume': '{:,}'
-    }
-    
-    for col, fmt in format_dict.items():
-        if col in df.columns:
-            try:
-                df[col] = df[col].apply(lambda x: fmt.format(x) if pd.notnull(x) else 'N/A')
-            except:
-                pass
-    
-    # Display with additional info
-    st.dataframe(
-        df[['symbol', 'price', 'change', 'volume']],
-        use_container_width=True,
-        height=min(800, 35 * (len(df) + 1))
-    
-    st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-
-def is_premarket_hours():
-    now = datetime.now().astimezone(pytz.timezone('US/Eastern'))
-    premarket_start = now.replace(hour=4, minute=0, second=0, microsecond=0)
-    premarket_end = now.replace(hour=9, minute=30, second=0, microsecond=0)
-    return premarket_start <= now < premarket_end
-
 
 def get_unusual_volume(min_price, min_volume, symbols, max_symbols_to_scan):
     """Scan for unusual volume stocks"""
@@ -523,27 +481,48 @@ def display_debug_info(scan_type, debug_reasons, total_scanned):
         st.write("No debug information available")
 
 def display_premarket(df):
-    """Display premarket movers"""
+    """Enhanced pre-market display with more information"""
     if df.empty:
-        st.warning("No premarket gappers found matching your criteria")
+        st.warning("""
+        No premarket gappers found matching your criteria. This could be because:
+        - It's outside pre-market hours (4:00 AM - 9:30 AM ET)
+        - Your price/volume filters are too restrictive
+        - Data sources are temporarily unavailable
+        """)
+        
+        if debug_mode:
+            st.info("Try lowering your minimum price/volume requirements or check debug logs")
         return
     
     st.subheader("Pre-Market Gappers")
     
+    # Add additional metrics
+    if 'change' in df.columns:
+        df['change'] = pd.to_numeric(df['change'], errors='coerce')
+        df = df.sort_values('change', ascending=False)
+    
+    # Format display
     format_dict = {
-        'Close': '${:.2f}',
-        '% Change': '{:.2f}%',
-        'Volume': '{:,}'
+        'price': '${:.2f}',
+        'change': '{:.2f}%',
+        'volume': '{:,}'
     }
     
     for col, fmt in format_dict.items():
         if col in df.columns:
             try:
-                df[col] = df[col].apply(lambda x: fmt.format(x) if pd.notnull(x) else x)
+                df[col] = df[col].apply(lambda x: fmt.format(x) if pd.notnull(x) else 'N/A')
             except:
                 pass
     
-    st.dataframe(df, use_container_width=True)
+    # Display with additional info
+    st.dataframe(
+        df[['symbol', 'price', 'change', 'volume']],
+        use_container_width=True,
+        height=min(800, 35 * (len(df) + 1))
+    )
+    
+    st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 def display_unusual_volume(df):
     """Display unusual volume stocks"""
