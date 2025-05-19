@@ -1,261 +1,204 @@
-import os
+import streamlit as st
 import yfinance as yf
 import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
-import requests
-from bs4 import BeautifulSoup
-import schedule
+from datetime import datetime
 import time
-from tqdm import tqdm
-from config import Config
-from utils.email_alerts import EmailAlerts
 from utils.technical_indicators import TechnicalIndicators
-from utils.backtesting import Backtester
 
-class StockScanner:
-    def __init__(self):
-        self.today = datetime.now().date()
-        self.unusual_volume_stocks = []
-        self.breakout_stocks = []
-        self.gappers = []
-        self.alert_system = EmailAlerts()
-        self.tech_indicators = TechnicalIndicators()
-        self.backtester = Backtester()
-        
-    def get_premarket_movers(self):
-        """Get pre-market gainers with volume from multiple sources"""
-        try:
-            sources = [
-                self._get_benzinga_premarket(),
-                self._get_yahoo_premarket()
-            ]
-            
-            # Combine and filter results
-            all_gappers = pd.concat(sources).drop_duplicates()
-            all_gappers = all_gappers[
-                (all_gappers['% Change'] > 2) & 
-                (all_gappers['% Change'] < 5) &
-                (all_gappers['Volume'] > 100000)
-            ]
-            
-            self.gappers = all_gappers.values.tolist()
-            
-        except Exception as e:
-            print(f"Error getting premarket movers: {e}")
+# Initialize technical indicators
+tech = TechnicalIndicators()
 
-    def _get_benzinga_premarket(self):
-        """Scrape Benzinga premarket data"""
+# Set page config
+st.set_page_config(
+    page_title="Stock Scanner Pro",
+    page_icon="📈",
+    layout="wide"
+)
+
+def main():
+    # Sidebar controls
+    st.sidebar.header("Scanner Settings")
+    scan_type = st.sidebar.selectbox(
+        "Scan Type",
+        ["Pre-Market Gappers", "Unusual Volume", "Breakouts"]
+    )
+    min_price = st.sidebar.number_input("Minimum Price", value=5.0)
+    min_volume = st.sidebar.number_input("Minimum Volume (K)", value=500)
+    min_volume *= 1000  # Convert to actual volume
+    
+    # Main app
+    st.title("📊 Stock Scanner Pro")
+    
+    if st.sidebar.button("Run Scan"):
+        with st.spinner("Scanning stocks..."):
+            # Run the appropriate scan
+            if scan_type == "Pre-Market Gappers":
+                results = get_premarket_movers(min_price, min_volume)
+                display_premarket(results)
+            elif scan_type == "Unusual Volume":
+                results = get_unusual_volume(min_price, min_volume)
+                display_unusual_volume(results)
+            else:
+                results = get_breakouts(min_price, min_volume)
+                display_breakouts(results)
+
+def get_premarket_movers(min_price, min_volume):
+    """Get pre-market movers with filters"""
+    try:
         url = "https://www.benzinga.com/premarket"
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers)
         soup = BeautifulSoup(response.text, 'html.parser')
         table = soup.find('table')
         df = pd.read_html(str(table))[0]
-        df.columns = ['Symbol', 'Last Sale', '% Change', 'Volume', 'Time', 'Headlines']
-        return df[['Symbol', 'Last Sale', '% Change', 'Volume']]
-
-    def _get_yahoo_premarket(self):
-        """Scrape Yahoo Finance premarket data"""
-        url = "https://finance.yahoo.com/pre-market"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        table = soup.find('table')
-        df = pd.read_html(str(table))[0]
-        df.columns = ['Symbol', 'Name', 'Price', 'Change', '% Change', 'Volume']
-        return df[['Symbol', 'Price', '% Change', 'Volume']]
-
-    def scan_unusual_volume(self, symbols):
-        """Scan for unusual volume in given symbols"""
-        unusual = []
         
-        for symbol in tqdm(symbols, desc="Scanning for unusual volume"):
-            try:
-                # Get recent data - adjust period for pre-market
-                period = "1d" if Config.is_pre_market() else "1mo"
-                stock = yf.Ticker(symbol)
-                hist = stock.history(period=period, interval="5m")
-                
-                if len(hist) < 20:  # Need enough data points
-                    continue
-                    
-                # Calculate metrics
-                current_volume = hist['Volume'][-1]
-                avg_volume = hist['Volume'].mean()
-                volume_ratio = current_volume / avg_volume
-                
-                current_close = hist['Close'][-1]
-                prev_close = hist['Close'][-2] if len(hist) > 1 else hist['Open'][0]
-                price_change_pct = (current_close - prev_close) / prev_close * 100
-                
-                # Check criteria
-                if (volume_ratio > Config.VOLUME_RATIO_THRESHOLD and 
-                    price_change_pct > Config.PRICE_CHANGE_THRESHOLD and 
-                    current_close > Config.MIN_PRICE and 
-                    current_volume > Config.MIN_VOLUME):
-                    
-                    unusual.append({
-                        'symbol': symbol,
-                        'price': current_close,
-                        'volume': current_volume,
-                        'avg_volume': avg_volume,
-                        'volume_ratio': round(volume_ratio, 2),
-                        'price_change': round(price_change_pct, 2),
-                        'time': hist.index[-1]
-                    })
-                    
-            except Exception as e:
-                print(f"Error processing {symbol}: {e}")
-        
-        self.unusual_volume_stocks = unusual
+        # Filter and return
+        return df[
+            (df['Last Sale'] > min_price) & 
+            (df['Volume'] > min_volume)
+        ]
+    except Exception as e:
+        st.error(f"Error fetching premarket data: {e}")
+        return pd.DataFrame()
 
-    def scan_breakouts(self, symbols):
-        """Scan for potential breakout stocks with technical indicators"""
-        breakouts = []
-        
-        for symbol in tqdm(symbols, desc="Scanning for breakouts"):
-            try:
-                stock = yf.Ticker(symbol)
-                hist = stock.history(period="1mo")
-                
-                if len(hist) < 5:
-                    continue
-                    
-                # Calculate technical indicators
-                hist = self.tech_indicators.add_all_indicators(hist)
-                
-                # Get current values
-                current_price = hist['Close'][-1]
-                current_volume = hist['Volume'][-1]
-                avg_volume = hist['Volume'].mean()
-                recent_high = hist['High'][-5:-1].max()
-                
-                # Check for breakout with volume and indicators
-                if (current_price > recent_high and 
-                    current_volume > 2 * avg_volume and 
-                    current_price > Config.MIN_PRICE and
-                    hist['SMA20'][-1] > hist['SMA50'][-1] and
-                    hist['RSI'][-1] < 70):
-                    
-                    breakouts.append({
-                        'symbol': symbol,
-                        'price': current_price,
-                        'breakout_level': recent_high,
-                        'volume': current_volume,
-                        'volume_ratio': round(current_volume / avg_volume, 2),
-                        'sma20': hist['SMA20'][-1],
-                        'sma50': hist['SMA50'][-1],
-                        'rsi': round(hist['RSI'][-1], 2),
-                        'time': hist.index[-1]
-                    })
-                    
-            except Exception as e:
-                print(f"Error processing {symbol}: {e}")
-        
-        self.breakout_stocks = breakouts
-
-    def get_sp500_symbols(self):
-        """Get current S&P 500 symbols with caching"""
-        cache_file = 'data/sp500_symbols.csv'
+def get_unusual_volume(min_price, min_volume):
+    """Scan for unusual volume stocks"""
+    # Get S&P 500 symbols
+    symbols = get_sp500_symbols()
+    results = []
+    
+    for symbol in symbols[:50]:  # Limit for demo
         try:
-            # Try to read from cache first
-            if os.path.exists(cache_file):
-                mtime = datetime.fromtimestamp(os.path.getmtime(cache_file))
-                if mtime.date() == self.today:
-                    return pd.read_csv(cache_file)['Symbol'].tolist()
+            stock = yf.Ticker(symbol)
+            hist = stock.history(period="1d", interval="5m")
             
-            # Fetch fresh data if cache is stale
-            table = pd.read_html('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')
-            df = table[0]
-            df.to_csv(cache_file, index=False)
-            return df['Symbol'].tolist()
+            if len(hist) < 20 or hist.empty:
+                continue
+                
+            current_volume = hist['Volume'][-1]
+            avg_volume = hist['Volume'].mean()
+            volume_ratio = current_volume / avg_volume
+            
+            current_close = hist['Close'][-1]
+            prev_close = hist['Close'][-2] if len(hist) > 1 else hist['Open'][0]
+            price_change_pct = (current_close - prev_close) / prev_close * 100
+            
+            if (current_close > min_price and 
+                current_volume > min_volume and 
+                volume_ratio > 2.0 and 
+                price_change_pct > 1.0):
+                
+                results.append({
+                    'Symbol': symbol,
+                    'Price': current_close,
+                    '% Change': price_change_pct,
+                    'Volume': current_volume,
+                    'Avg Volume': avg_volume,
+                    'Volume Ratio': volume_ratio
+                })
         except:
-            # Fallback if Wikipedia fails
-            return ['AAPL', 'MSFT', 'AMZN', 'GOOG', 'META', 'TSLA', 'NVDA', 'AMD', 'INTC', 'QCOM']
+            continue
+    
+    return pd.DataFrame(results)
 
-    def run_scan(self):
-        """Run complete scanning process"""
-        print(f"\n{' Pre-Market ' if Config.is_pre_market() else ' Regular Market '} Scan - {datetime.now()}")
-        
-        # Step 1: Get potential symbols to scan
-        symbols = self.get_sp500_symbols()
-        
-        # Step 2: Get pre-market movers
-        self.get_premarket_movers()
-        
-        # Add gappers to our scan list
-        if self.gappers:
-            symbols += [item[0] for item in self.gappers]
-        
-        # Remove duplicates
-        symbols = list(set(symbols))
-        
-        # Step 3: Run volume and breakout scans
-        self.scan_unusual_volume(symbols)
-        self.scan_breakouts(symbols)
-        
-        # Step 4: Display and alert results
-        self.display_results()
-        
-        # Step 5: Send email alerts if any significant signals found
-        if self.unusual_volume_stocks or self.breakout_stocks:
-            self.send_alerts()
+def get_breakouts(min_price, min_volume):
+    """Scan for breakout stocks"""
+    symbols = get_sp500_symbols()
+    results = []
+    
+    for symbol in symbols[:50]:  # Limit for demo
+        try:
+            stock = yf.Ticker(symbol)
+            hist = stock.history(period="1mo")
+            hist = tech.add_all_indicators(hist)
+            
+            if len(hist) < 5 or hist.empty:
+                continue
+                
+            current_price = hist['Close'][-1]
+            current_volume = hist['Volume'][-1]
+            avg_volume = hist['Volume'].mean()
+            recent_high = hist['High'][-5:-1].max()
+            
+            if (current_price > min_price and
+                current_volume > min_volume and
+                current_price > recent_high and
+                hist['SMA20'][-1] > hist['SMA50'][-1]):
+                
+                results.append({
+                    'Symbol': symbol,
+                    'Price': current_price,
+                    'Breakout Level': recent_high,
+                    'Volume': current_volume,
+                    'SMA20': hist['SMA20'][-1],
+                    'SMA50': hist['SMA50'][-1],
+                    'RSI': hist['RSI'][-1]
+                })
+        except:
+            continue
+    
+    return pd.DataFrame(results)
 
-    def display_results(self):
-        """Display scan results in console"""
-        print("\n=== Pre-Market Gappers ===")
-        for stock in self.gappers:
-            print(f"{stock[0]}: {stock[1]} ({stock[2]}%) Volume: {stock[3]:,}")
-        
-        print("\n=== Unusual Volume Stocks ===")
-        for stock in sorted(self.unusual_volume_stocks, key=lambda x: x['volume_ratio'], reverse=True):
-            print(f"{stock['symbol']}: ${stock['price']} ({stock['price_change']}%) "
-                  f"Volume: {stock['volume']:,} (Avg: {stock['avg_volume']:,.0f}, "
-                  f"Ratio: {stock['volume_ratio']}x) @ {stock['time'].strftime('%H:%M')}")
-        
-        print("\n=== Breakout Candidates ===")
-        for stock in sorted(self.breakout_stocks, key=lambda x: x['volume_ratio'], reverse=True):
-            print(f"{stock['symbol']}: ${stock['price']} (Breakout: ${stock['breakout_level']}) "
-                  f"Volume: {stock['volume']:,} (Ratio: {stock['volume_ratio']}x) "
-                  f"SMA20/50: {stock['sma20']:.2f}/{stock['sma50']:.2f} RSI: {stock['rsi']}")
+def display_premarket(df):
+    """Display premarket movers"""
+    if df.empty:
+        st.warning("No premarket gappers found matching your criteria")
+        return
+    
+    st.subheader("Pre-Market Gappers")
+    st.dataframe(
+        df.style.format({
+            'Last Sale': '${:.2f}',
+            '% Change': '{:.2f}%',
+            'Volume': '{:,}'
+        }),
+        use_container_width=True
+    )
 
-    def send_alerts(self):
-        """Send email alerts for significant findings"""
-        subject = f"Stock Scanner Alert - {len(self.unusual_volume_stocks)} Unusual Volume, {len(self.breakout_stocks)} Breakouts"
-        
-        body = "Stock Scanner Results:\n\n"
-        body += "Unusual Volume Stocks:\n"
-        for stock in self.unusual_volume_stocks:
-            body += (f"{stock['symbol']}: ${stock['price']} ({stock['price_change']}%) "
-                    f"Volume: {stock['volume']:,} (Ratio: {stock['volume_ratio']}x)\n")
-        
-        body += "\nBreakout Candidates:\n"
-        for stock in self.breakout_stocks:
-            body += (f"{stock['symbol']}: ${stock['price']} (Breakout: ${stock['breakout_level']}) "
-                    f"Volume: {stock['volume']:,} (Ratio: {stock['volume_ratio']}x)\n")
-        
-        self.alert_system.send_alert(subject, body)
+def display_unusual_volume(df):
+    """Display unusual volume stocks"""
+    if df.empty:
+        st.warning("No unusual volume stocks found")
+        return
+    
+    st.subheader("Unusual Volume Stocks")
+    st.dataframe(
+        df.sort_values('Volume Ratio', ascending=False).style.format({
+            'Price': '${:.2f}',
+            '% Change': '{:.2f}%',
+            'Volume': '{:,}',
+            'Avg Volume': '{:,}',
+            'Volume Ratio': '{:.2f}x'
+        }),
+        use_container_width=True
+    )
 
-    def run_scheduled_scans(self):
-        """Run scans on a schedule"""
-        if Config.is_pre_market():
-            # Run every 15 minutes during pre-market
-            schedule.every(15).minutes.do(self.run_scan)
-        else:
-            # Run every 5 minutes during regular market hours
-            schedule.every(5).minutes.do(self.run_scan)
-        
-        print("Scanner started. Press Ctrl+C to exit.")
-        while True:
-            schedule.run_pending()
-            time.sleep(1)
+def display_breakouts(df):
+    """Display breakout stocks"""
+    if df.empty:
+        st.warning("No breakout stocks found")
+        return
+    
+    st.subheader("Breakout Candidates")
+    st.dataframe(
+        df.style.format({
+            'Price': '${:.2f}',
+            'Breakout Level': '${:.2f}',
+            'Volume': '{:,}',
+            'SMA20': '{:.2f}',
+            'SMA50': '{:.2f}',
+            'RSI': '{:.2f}'
+        }),
+        use_container_width=True
+    )
+
+def get_sp500_symbols():
+    """Get S&P 500 symbols with caching"""
+    try:
+        table = pd.read_html('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')
+        return table[0]['Symbol'].tolist()
+    except:
+        return ['AAPL', 'MSFT', 'AMZN', 'GOOG', 'META', 'TSLA', 'NVDA', 'AMD', 'INTC', 'QCOM']
 
 if __name__ == "__main__":
-    scanner = StockScanner()
-    
-    # Run either once or continuously
-    if len(os.sys.argv) > 1 and os.sys.argv[1] == "--continuous":
-        scanner.run_scheduled_scans()
-    else:
-        scanner.run_scan()
+    main()
