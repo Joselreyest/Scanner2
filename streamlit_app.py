@@ -545,10 +545,67 @@ def plot_stock_chart(symbol, period="1mo"):
         ax.legend()
         
         st.pyplot(fig)
-        plt.close(fig)  # Important to prevent memory leaks
+        plt.close(fig)
         
     except Exception as e:
         st.error(f"Error plotting chart for {symbol}: {str(e)}")
+
+def display_results_with_chart(df, scan_type):
+    """Display results with chart selector that persists"""
+    if df.empty:
+        st.warning(f"No {scan_type} stocks found")
+        return
+    
+    # Store results in session state
+    st.session_state.scan_results = df
+    st.session_state.scan_type = scan_type
+    
+    # Display results
+    st.subheader(f"{scan_type} Results")
+    
+    # Formatting based on scan type
+    if scan_type == "Pre-Market Gappers":
+        format_dict = {
+            'price': '${:.2f}',
+            'change': '{:.2f}%',
+            'volume': '{:,}'
+        }
+        symbol_col = 'symbol'
+    else:
+        format_dict = {
+            'Price': '${:.2f}',
+            '% Change': '{:.2f}%',
+            'Volume': '{:,}',
+            'Avg Volume': '{:,}',
+            'Volume Ratio': '{:.2f}x',
+            'SMA20': '{:.2f}',
+            'SMA50': '{:.2f}',
+            'RSI': '{:.2f}'
+        }
+        symbol_col = 'Symbol'
+    
+    # Apply formatting
+    formatted_df = df.copy()
+    for col, fmt in format_dict.items():
+        if col in formatted_df.columns:
+            try:
+                formatted_df[col] = formatted_df[col].apply(lambda x: fmt.format(x) if pd.notnull(x) else x)
+            except:
+                pass
+    
+    st.dataframe(formatted_df, use_container_width=True)
+    
+    # Chart selector - persists because results are in session_state
+    if not df.empty:
+        selected_symbol = st.selectbox(
+            "Select a symbol to view chart:",
+            options=df[symbol_col].unique(),
+            key=f"chart_select_{scan_type}"  # Unique key per scan type
+        )
+        
+        if selected_symbol:
+            plot_stock_chart(selected_symbol)
+            
 
 def display_premarket(df):
     """Enhanced pre-market display with more information"""
@@ -716,14 +773,7 @@ def main():
             step=50
         )
         
-        st.sidebar.markdown("""
-        **Data Sources:**  
-        - SP500: SlickCharts + Wikipedia  
-        - NASDAQ: Official API + CSV  
-        - Small Caps: ETF Holdings + Known Stocks
-        """)
-        
-        st.title("📈 Enhanced Stock Scanner Pro")
+        st.title("📈 Persistent Chart Stock Scanner")
         
         if st.sidebar.button("Run Scan"):
             with st.spinner("Loading symbols and scanning..."):
@@ -733,13 +783,18 @@ def main():
                 
                 if scan_type == "Pre-Market Gappers":
                     results = get_premarket_movers(min_price, min_volume)
-                    display_premarket(results)
                 elif scan_type == "Unusual Volume":
                     results = get_unusual_volume(min_price, min_volume, symbols, max_symbols_to_scan)
-                    display_unusual_volume(results)
                 else:
                     results = get_breakouts(min_price, min_volume, symbols, max_symbols_to_scan)
-                    display_breakouts(results)
+                
+                display_results_with_chart(results, scan_type)
+        
+        # Show previous results if they exist (persists through symbol selection)
+        if 'scan_results' in st.session_state and 'scan_type' in st.session_state:
+            st.write("---")
+            display_results_with_chart(st.session_state.scan_results, st.session_state.scan_type)
+            
     except Exception as e:
         st.error(f"An unexpected error occurred: {str(e)}")
         logging.error(f"Main error: {str(e)}")
